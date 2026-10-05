@@ -366,11 +366,71 @@ const VAULT_TAXONOMY = [
       ]},
     ],
   },
+  {
+    // Shown in its own collapsible group in the Vault form, since it only
+    // fits some books. Tag names are unique across the whole taxonomy
+    // (selection and follow-up questions are matched by tag name).
+    category: "Hero's Journey",
+    separate: true,
+    tags: [
+      { name: "Ordinary World", questions: [
+        "What details show you what this character's everyday life is like?",
+        "What, if anything, does this character want that they don't have yet?",
+      ]},
+      { name: "Call to Adventure", questions: [
+        "What event or message is pulling this character out of their everyday life?",
+        "How does the character react at first, and what does that tell you about them?",
+      ]},
+      { name: "Refusal of the Call", questions: [
+        "What is holding this character back from saying yes?",
+        "What would they have to give up or risk if they went?",
+      ]},
+      { name: "Meeting the Mentor", questions: [
+        "Who is guiding or helping this character here, and what are they offering?",
+        "What does the character still have to figure out on their own?",
+      ]},
+      { name: "Crossing the Threshold", questions: [
+        "What line is this character crossing, and what are they leaving behind?",
+        "How is this new world different from the one they came from?",
+      ]},
+      { name: "Tests, Allies & Enemies", questions: [
+        "Who is standing with this character, and who is against them? How can you tell?",
+        "What is this challenge teaching the character about the new world?",
+      ]},
+      { name: "Approach to the Inmost Cave", questions: [
+        "What is this character preparing for, and how are they getting ready?",
+        "What do they seem most afraid of facing?",
+      ]},
+      { name: "The Ordeal", questions: [
+        "What is the hardest moment the character faces here?",
+        "What does this moment cost them?",
+      ]},
+      { name: "The Reward", questions: [
+        "What does the character gain from getting through the ordeal?",
+        "Is this something they were seeking, or something unexpected?",
+      ]},
+      { name: "The Road Back", questions: [
+        "What is pushing the character to head home or move on?",
+        "What from the ordeal is still following them?",
+      ]},
+      { name: "Resurrection", questions: [
+        "What final test is the character facing, and how is it different from the earlier ones?",
+        "What can the character do now that they could not have done at the start?",
+      ]},
+      { name: "Return with the Elixir", questions: [
+        "What does the character bring back, and who benefits from it?",
+        "How is the character's ordinary world different now that they're back?",
+      ]},
+    ],
+  },
 ];
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysSince = (dateStr) => Math.floor((Date.now() - new Date(dateStr + "T00:00:00").getTime()) / 86400000);
 const STALL_DAYS = 10;
+// A book counts as stalled when nothing has been logged on it for STALL_DAYS —
+// measured from its most recent Reading Status or Vault entry (or the start
+// date, if it has none), not from the day it was started.
 
 // Pulls every question attached to the selected tags, dedupes, and returns
 // a random sample of up to `count` — used to populate the required
@@ -667,8 +727,11 @@ export default function ReadingLogApp() {
       .sort((a, b) => b.rating - a.rating);
   }
 
-  async function addBook({ title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, totalPages }) {
-    await addLogEntry(uid, CLASS_ID, { title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, totalPages });
+  // Note: starting a book only writes a reading-log entry. It never creates a
+  // library title or copy — fromHome just records that the book isn't the
+  // classroom's, so it can be told apart in the log and the Sheet.
+  async function addBook({ title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, totalPages, fromHome }) {
+    await addLogEntry(uid, CLASS_ID, { title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, totalPages, fromHome });
     setAddOpen(false);
   }
 
@@ -819,6 +882,20 @@ export default function ReadingLogApp() {
       .slice(0, 10);
   }, [readingLog]);
 
+  // Most recent activity date per log entry (start date, status check-ins, vault entries).
+  const lastActivityByEntry = useMemo(() => {
+    const map = {};
+    const bump = (id, date) => {
+      if (!id || !date) return;
+      if (!map[id] || date > map[id]) map[id] = date;
+    };
+    readingLog.forEach((e) => bump(e.id, e.dateStarted));
+    statusEntries.forEach((s) => bump(s.logEntryId, s.date));
+    vaultEntries.forEach((v) => bump(v.logEntryId, v.date));
+    return map;
+  }, [readingLog, statusEntries, vaultEntries]);
+  const staleDays = (b) => daysSince(lastActivityByEntry[b.id] || b.dateStarted);
+
   // Teacher aggregate stats (across the whole class)
   const allEntries = readingLog;
   const genreCounts = {};
@@ -827,7 +904,9 @@ export default function ReadingLogApp() {
   const finishedAll = allEntries.filter((b) => b.status === "finished");
   const avgRating = finishedAll.length ? (finishedAll.reduce((a, b) => a + b.rating, 0) / finishedAll.length).toFixed(1) : "—";
   const abandonRate = allEntries.length ? Math.round((allEntries.filter((b) => b.status === "abandoned").length / allEntries.length) * 100) : 0;
-  const stalledAll = allEntries.filter((b) => b.status === "reading" && daysSince(b.dateStarted) >= STALL_DAYS);
+  const stalledAll = allEntries
+    .filter((b) => b.status === "reading" && staleDays(b) >= STALL_DAYS)
+    .sort((a, b) => staleDays(b) - staleDays(a));
   const reasonCounts = {};
   allEntries.filter((b) => b.status === "abandoned" && b.reason).forEach((b) => { reasonCounts[b.reason] = (reasonCounts[b.reason] || 0) + 1; });
   const maxReasonCount = Math.max(1, ...Object.values(reasonCounts), 0);
@@ -915,7 +994,7 @@ export default function ReadingLogApp() {
             ) : (
               <div className="rl-grid">
                 {reading.map((b) => {
-                  const stalled = daysSince(b.dateStarted) >= STALL_DAYS;
+                  const stalled = staleDays(b) >= STALL_DAYS;
                   return (
                     <div className="rl-card" key={b.id}>
                       <div className="rl-card-body">
@@ -923,8 +1002,8 @@ export default function ReadingLogApp() {
                         <div className="rl-card-text">
                           <div className="rl-card-title">{b.title}</div>
                           <div className="rl-card-author">{b.author}</div>
-                          <div className="rl-tagrow"><span className="rl-genre-tag">{b.genre}</span><span>started {b.dateStarted}</span></div>
-                          {stalled && <div className="rl-flag"><Flag size={10} /> {daysSince(b.dateStarted)} days, no update — check in?</div>}
+                          <div className="rl-tagrow"><span className="rl-genre-tag">{b.genre}</span><span>started {b.dateStarted}</span>{b.fromHome && <span>&middot; from home</span>}</div>
+                          {stalled && <div className="rl-flag"><Flag size={10} /> {staleDays(b)} days, no update — check in?</div>}
                         </div>
                       </div>
                       <div className="rl-btnrow">
@@ -1217,7 +1296,7 @@ export default function ReadingLogApp() {
                 {stalledAll.map((b) => (
                   <div className="rl-checkout-row" key={b.id}>
                     <span className="who">{students.find((s) => s.id === b.studentId)?.name || "Unknown"} — {b.title}</span>
-                    <span className="days">{daysSince(b.dateStarted)} days, no update</span>
+                    <span className="days">{staleDays(b)} days, no update</span>
                   </div>
                 ))}
               </>
@@ -1424,13 +1503,12 @@ function VaultEntryModal({ book, onClose, onSave }) {
           <>
             <div className="rl-field"><label>Page</label><input type="number" min="0" value={page} onChange={(e) => setPage(e.target.value)} placeholder="What page are you on?" autoFocus /></div>
             <div className="rl-field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div className="rl-field"><label>Quote (optional)</label><textarea value={quote} onChange={(e) => setQuote(e.target.value)} placeholder="What line or moment are you noticing?" /></div>
+            <div className="rl-field"><label>What's happening in your book? (optional)</label><textarea value={quote} onChange={(e) => setQuote(e.target.value)} placeholder="Summarize the moment, scene, or line you're noticing right now." /></div>
             <div className="rl-field"><label>Your idea, reaction, or question</label><textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="What are you thinking about right now?" /></div>
             <div className="rl-field">
               <label>Tags (pick as many as fit)</label>
-              {VAULT_TAXONOMY.map((cat) => (
-                <div key={cat.category} style={{ marginBottom: 8 }}>
-                  <div className="rl-isbn-status" style={{ marginBottom: 3, textTransform: "uppercase" }}>{cat.category}</div>
+              {VAULT_TAXONOMY.map((cat) => {
+                const tagList = (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
                     {cat.tags.map((tag) => (
                       <label key={tag.name} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5, fontFamily: "Georgia, serif" }}>
@@ -1438,8 +1516,25 @@ function VaultEntryModal({ book, onClose, onSave }) {
                       </label>
                     ))}
                   </div>
-                </div>
-              ))}
+                );
+                if (cat.separate) {
+                  const anyPicked = cat.tags.some((t) => selectedTags.includes(t.name));
+                  return (
+                    <details key={cat.category} open={anyPicked} style={{ marginBottom: 8 }}>
+                      <summary className="rl-isbn-status" style={{ marginBottom: 3, textTransform: "uppercase", cursor: "pointer" }}>
+                        {cat.category} — open if this fits your book
+                      </summary>
+                      {tagList}
+                    </details>
+                  );
+                }
+                return (
+                  <div key={cat.category} style={{ marginBottom: 8 }}>
+                    <div className="rl-isbn-status" style={{ marginBottom: 3, textTransform: "uppercase" }}>{cat.category}</div>
+                    {tagList}
+                  </div>
+                );
+              })}
             </div>
             <button className="rl-btn solid" style={{ width: "100%", justifyContent: "center" }} disabled={!canSubmitEntry} onClick={goToFollowUp}>
               Continue <ChevronRight size={14} />
@@ -2173,8 +2268,10 @@ function AddBookModal({ onClose, onSave, library }) {
   const [whyThisBook, setWhyThisBook] = useState("");
   const [interviewTechniques, setInterviewTechniques] = useState([]);
   const [priorKnowledge, setPriorKnowledge] = useState("");
+  const [fromHome, setFromHome] = useState(false);
 
   function handlePick(book) {
+    setFromHome(false); // picked off the classroom shelf, so it isn't from home
     setTitle(book.title);
     setAuthor(book.author);
     setGenre(book.genre);
@@ -2193,6 +2290,10 @@ function AddBookModal({ onClose, onSave, library }) {
         <button className="rl-close" onClick={onClose}><X size={18} /></button>
         <h3>Start a New Book</h3>
         <LibraryOnlyAutocomplete value={title} onChange={setTitle} onPick={handlePick} library={library} />
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontFamily: "Georgia, serif", margin: "-4px 0 12px" }}>
+          <input type="checkbox" checked={fromHome} onChange={(e) => setFromHome(e.target.checked)} />
+          This book is from home (it's not a classroom library book)
+        </label>
         <div className="rl-field"><label>Author</label><input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Author name" /></div>
         <div className="rl-field"><label>Genre</label>
           <select value={genre} onChange={(e) => setGenre(e.target.value)}>
@@ -2215,7 +2316,7 @@ function AddBookModal({ onClose, onSave, library }) {
         </div>
         <div className="rl-field"><label>What do you already know or are familiar with about the story?</label><textarea value={priorKnowledge} onChange={(e) => setPriorKnowledge(e.target.value)} placeholder="Anything you already know — from a movie, a friend, the series, class..." /></div>
 
-        <button className="rl-btn solid" style={{ width: "100%", justifyContent: "center" }} disabled={!title || !author} onClick={() => onSave({ title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, totalPages: totalPages ? parseInt(totalPages, 10) : null })}>
+        <button className="rl-btn solid" style={{ width: "100%", justifyContent: "center" }} disabled={!title || !author} onClick={() => onSave({ title, author, genre, dateStarted, isbn, cover, whyThisBook, interviewTechniques, priorKnowledge, fromHome, totalPages: totalPages ? parseInt(totalPages, 10) : null })}>
           Add to My Log <ChevronRight size={14} />
         </button>
       </div>
@@ -2462,7 +2563,7 @@ function CloseBookModal({ mode, book, statusEntries, onClose, onSave }) {
   const combinedTalk = [hook, setup, stakes, pitch].filter(Boolean).join(" ");
   const sentenceCount = countSentences(combinedTalk);
   const talkSpoiler = spoilerCheck(combinedTalk);
-  const canFinish = rating > 0 && sentenceCount >= 8;
+  const canFinish = rating > 0;
 
   // ---- Abandon (3-step) state ----
   const [step, setStep] = useState(0); // 0 = nudge, 1 = reason, 2 = reflection
@@ -2514,7 +2615,7 @@ function CloseBookModal({ mode, book, statusEntries, onClose, onSave }) {
           <div className="rl-field"><label>The Stakes — what's the central problem or question driving the story?</label><textarea value={stakes} onChange={(e) => setStakes(e.target.value)} /></div>
           <div className="rl-field"><label>The Pitch — who'd love this, and why? What did it leave you thinking about?</label><textarea value={pitch} onChange={(e) => setPitch(e.target.value)} /></div>
           <div className="rl-isbn-status" style={{ marginBottom: 8 }}>
-            {sentenceCount} sentence{sentenceCount === 1 ? "" : "s"} so far {sentenceCount < 8 ? "(need at least 8)" : "— nice, you're there"}
+            {sentenceCount} sentence{sentenceCount === 1 ? "" : "s"} so far
           </div>
           {talkSpoiler ? (
             <div className="rl-spoiler-hint warn"><AlertTriangle size={12} /> That might give away what happens — double check before you save.</div>
